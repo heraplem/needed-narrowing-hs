@@ -1,0 +1,17 @@
+cabal-version:      1.24
+name:               needed-narrowing-hs
+version:            0.1.0.0
+license:            GPL-3
+license-file:       LICENSE
+author:             Nicholas Coltharp
+maintainer:         mail@heraplem.xyz
+category:           Research
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+
+library
+    exposed-modules:    NeededNarrowing
+    build-depends:      base, megaparsec, mtl, optics
+    hs-source-dirs:     src
+    default-language:   GHC2021
+    default-extensions: BlockArguments, LambdaCase, TypeFamilies
