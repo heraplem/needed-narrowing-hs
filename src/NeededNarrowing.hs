@@ -1,11 +1,23 @@
 module NeededNarrowing where
 
+import Data.Coerce
 import Data.Void
+import Data.Maybe
 import Data.List
+import Data.Monoid
 import Control.Monad
 import Control.Monad.Writer
 import Optics
 import Optics.Operators.Unsafe
+
+-----------------------
+-- Association lists --
+-----------------------
+
+type AList k v = [(k, v)]
+
+alistGet :: Eq k => k -> AList k v -> Maybe v
+alistGet k = fmap snd . find ((k ==) . fst)
 
 -----------
 -- Terms --
@@ -23,6 +35,19 @@ data Term c f x
   = Constr c [Term c f x]
   | Op f [Term c f x]
   | Var x
+  deriving (Show)
+
+-- Get or set a term's immediate subterms (if it has any).
+
+immediateSubterms :: AffineTraversal' (Term c f x) [Term c f x]
+immediateSubterms = atraversal get set where
+  get (Constr _ ts) = Right ts
+  get (Op _ ts) = Right ts
+  get t = Left t
+
+  set (Constr c ts) ts' = Constr c ts'
+  set (Op f ts) ts' = Op f ts'
+  set t _ = t
 
 --------------------
 -- Indexing terms --
@@ -43,32 +68,28 @@ instance Ixed (Term c f x) where
   ix [] = atraversal Right (const id)
   ix (i : is) = immediateSubterms % ix i % ix is
 
-immediateSubterms :: AffineTraversal' (Term c f x) [Term c f x]
-immediateSubterms = atraversal get set where
-  get (Constr _ ts) = Right ts
-  get (Op _ ts) = Right ts
-  get t = Left t
+-- We can also look for a variable in a term.
 
-  set (Constr c ts) ts' = Constr c ts'
-  set (Op f ts) ts' = Op f ts'
-  set t _ = t
+findVar :: Eq x => x -> Term c f x -> Maybe Position
+findVar x = go where
+  go (Var x') | x' == x = Just []
+              | otherwise = Nothing
+  go (Constr _ ts) = go' ts
+  go (Op _ ts) = go' ts
+
+  go' ts = ts & zipWith (\i t -> (i:) <$> go t) [0..] &
+    under (coerced @(Alt Maybe [Int])) mconcat
 
 -------------------
 -- Substitutions --
 -------------------
 
--- A substitution is a list that associates terms to variables.
---
--- We could just represent a substitution as a function from variables to terms,
--- but narrowing will compute a substitution as an output, and we want to be
--- able to inspect it.
-
-type Sub c f x = [(x, Term c f x)]
+type Sub c f x = AList x (Term c f x)
 
 -- Substitute a single variable.
 
 sub :: Eq x => Sub c f x -> x -> Term c f x
-sub s x = s & find ((x == ) . fst) & maybe (Var x) snd
+sub s x = fromMaybe (Var x) . alistGet x $ s
 
 -- Action of substitutions on terms.
 
@@ -98,9 +119,16 @@ type Pat x = [Term () Void x]
 -- We assume that the pattern is linear.
 
 match :: Pat x -> Term c f x -> Sub c f x
-match ps (Op _ ts) = concatMap (uncurry go) (zip ps ts) where
+match = \ps (Op _ ts) -> concatMap (uncurry go) (zip ps ts) where
   go (Var x) t' = [(x, t')]
   go (Constr _ ts) (Constr c' ts') = concatMap (uncurry go) (zip ts ts')
+
+-- Convert a term to a pattern.
+
+toPat :: Term c f x -> Pat x
+toPat = \(Op _ ts) -> go <$> ts where
+  go (Var x) = Var x
+  go (Constr _ ts) = Constr () (go <$> ts)
 
 -------------------
 -- Rewrite rules --
@@ -117,8 +145,8 @@ rewrite :: Eq x => Rule c f x -> Term c f x -> Term c f x
 rewrite (p, t') t = bind (match p t) t'
 
 -- Rewriting at a subterm.  (We could simulate this by generating a pattern with
--- free variables, but then we would have to decide how to generate free
--- variables.)
+-- free variables everywhere except at the rewriting position, but then we would
+-- have to decide how to generate free variables.)
 
 rewriteAt :: Eq x => Rule c f x -> Position -> Term c f x -> Term c f x
 rewriteAt r p = ix p %~ rewrite r
@@ -135,86 +163,85 @@ rewriteAt r p = ix p %~ rewrite r
 --
 -- + a leaf, which specifies a rewrite rule.
 --
--- You can think of a definitional tree as an "operationalized" pattern (in the
--- general sense of the term "pattern").  It tells you the order in which to
--- match subpatterns.
+-- You can think of a definitional tree as an "operationalized" definition by
+-- pattern-matching.  It tells you the order in which to match subpatterns.
 
 data Tree c f x
   = Leaf (Rule c f x)
-  | Branch Position [(c, [Term c f x], Tree c f x)]
+  | Branch Position (AList c ([x], Tree c f x))
+  deriving (Show)
 
 ----------------------------
 -- Term rewriting systems --
 ----------------------------
 
--- For our purposes, a term rewriting system is just a function that associates
--- to each function symbol a definitional tree.
+type TRS c f x = AList f (Tree c f x)
 
-type TRS c f x = f -> Tree c f x
+trsGet :: Eq f => f -> TRS c f x -> Tree c f x
+trsGet f = fromJust . alistGet f
 
 ---------------
 -- Narrowing --
 ---------------
 
--- A narrowing step is a substitution followed by a rewrite rule at a certain
--- position.  The purpose of the substitution is to instantiate free variables
--- in order to make the rewrite rule applicable.
+-- Given a term (in a TRS), we can compute all possible narrowing steps that
+-- could apply to it.
 
-type NarrowingStep c f x = (Sub c f x, Rule c f x, Position)
-
--- Narrowing steps act on terms in the obvious way.
-
-narrow :: Eq x => NarrowingStep c f x -> Term c f x -> Term c f x
-narrow (s, r, p) = rewriteAt r p . bind s
-
--- Now, given a term (in a TRS), we can compute all possible narrowing steps
--- that could apply to it.
-
-narrowings :: forall c f x. (Eq c, Eq x) => TRS c f x -> Term c f x -> [NarrowingStep c f x]
-narrowings trs = \case
-  t@(Op f ts) -> runWriterT (go (trs f) t) & fmap \(r, (s, p)) -> (s, r, p)
+narrowings' :: forall c f x. (Eq c, Eq f, Eq x) => TRS c f x -> Term c f x -> [(Term c f x, Sub c f x)]
+narrowings' trs = \case
+  t@(Op f ts) -> runWriterT (go (trsGet f trs) [] t)
   _ -> []
   where
-    -- This is the main loop.  We are given a definitional tree for some
-    -- operation `f` and a term `t` that is rooted by `f`.  We return a list of
-    -- all possible rewrite rules that could be applied to `t`.  Along the way,
-    -- we accumulate the position at which the rule must be applied, as well as
-    -- the substitution necessary to make the rule applicable.
-    go :: Tree c f x -> Term c f x -> WriterT (Sub c f x, Position) [] (Rule c f x)
-    go (Leaf r) _ = return r
-    go (Branch p cs) t =
-      -- `u` is the subterm of `t` at position `p`.
-      let u = t ^?! ix p
+    -- This is the main loop.
+    --
+    -- We are given:
+    --
+    -- + the definitional tree for an operation f;
+    --
+    -- + a position p that we are "focusing"; and
+    --
+    -- + a term t (rooted by f) that we are inspecting.
+    --
+    -- We return a list of possible terms that t could narrow to, along with the
+    -- necessary substitutions.
+    --
+    -- The focusing position p identifies the subterm of t that we are
+    -- inspecting.  We need to keep track of this because, when we find that the
+    -- subterm at the inductive position is operation-rooted, we must
+    -- recursively narrow that subterm.
+    --
+    -- We need to keep the entire term t around because any free variables that
+    -- we instantiate must be instantiated everywhere they occur in t, not just
+    -- in the subterm that we are inspecting.
+    go :: Tree c f x -> Position -> Term c f x -> WriterT (Sub c f x) [] (Term c f x)
+    go (Leaf r) p t = return (rewriteAt r p t)
+    go (Branch ip children) p t =
+         -- ip is the inductive position.  p is the position that we are
+         -- focusing.  p' is the subterm at the inductive position relative to
+         -- p.
+      let p' = p ++ ip
+          -- u is the subterm of t at position p'
+          u = t ^?! ix p'
       in case u of
-        Constr c ts -> case find (\(c', _, _) -> c' == c) cs of
-          -- The subterm at `p` is a constructor application.  If there is a
-          -- child node with that constructor, continue; otherwise, fail.
+        Constr c ts -> case alistGet c children of
+          -- The subterm at the inductive position is a constructor.  We need to
+          -- continue with the child case corresponding to that constructor.  If
+          -- there isn't one, we fail.
           Nothing -> mzero
-          Just (_, _, child) -> go child t
+          Just (_, child) -> go child p t
         Var x -> do
-          -- The subterm at `p` is a variable `x`.  For each child node:
-          (c, ts, child) <- lift cs
-          -- Construct a singleton substitution `s` that maps `x` to that
-          -- constructor application.
-          let s = [(x, Constr c ts)]
-          -- Append that substitution to the output.
-          tell (s, [])
-          -- Also, apply it to the term that we are narrowing.
+          -- The subterm at the inductive position is a variable.  We
+          -- instantiate that variable with each possible constructor case and
+          -- continue.
+          (c, (xs, child)) <- lift children
+          let s = [(x, Constr c (Var <$> xs))]
+          tell s
           let t' = bind s t
-          -- Continue.
-          go child t'
-        Op f _ -> do
-          -- The subterm at `p` is an application of a function `f`.  We are
-          -- going to have to apply a narrowing step to `f`.
-          --
-          -- The resulting rewrite rule will have to be applied at position `p`.
-          tell ([], p)
-          -- Continue.
-          go (trs f) u
+          go child p t'
+        Op f _ ->
+          -- The subterm at the inductive position is a function application.
+          -- We narrow it recursively.
+          go (trsGet f trs) p' u
 
--- Finally, given a term in a TRS, we can compute all possible narrowing steps
--- and immediately apply them.  This is essentially a small-step operational
--- semantics for the TRS.
-
-narrows :: (Eq c, Eq x) => TRS c f x -> Term c f x -> [Term c f x]
-narrows trs t = flip narrow t <$> narrowings trs t
+narrowings :: forall c f x. (Eq c, Eq f, Eq x) => TRS c f x -> Term c f x -> [Term c f x]
+narrowings trs t = fst <$> narrowings' trs t
