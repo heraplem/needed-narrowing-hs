@@ -31,7 +31,7 @@ processTree = \f xs -> go (Op f (Var <$> xs)) where
   go t (RawLeaf t') = Leaf (toPat t, t')
   go t (RawBranch x children) =
     let p = fromJust (findVar x t)
-    in Branch p [(c, xs, go (t & ix p .~ Constr c (Var <$> xs)) child) | (c, xs, child) <- children]
+    in Branch p [(c, (xs, go (t & ix p .~ Constr c (Var <$> xs)) child)) | (c, xs, child) <- children]
 
 type RawTRS c f x = [(f, [x], RawTree c f x)]
 
