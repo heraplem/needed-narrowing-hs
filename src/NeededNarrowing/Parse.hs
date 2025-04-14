@@ -1,4 +1,4 @@
-module NeededNarrowing.Parse (parseTerm, parseTrsFromFile) where
+module NeededNarrowing.Parse (parseTerm, parseTrsRepFromFile) where
 
 import Data.Function
 import Data.Void
