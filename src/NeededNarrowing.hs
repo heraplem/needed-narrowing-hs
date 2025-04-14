@@ -2,9 +2,8 @@
 
 module NeededNarrowing where
 
-import Data.Coerce
 import GHC.Generics
-
+import Data.Coerce
 import Data.Void
 import Data.Maybe
 import Data.List
