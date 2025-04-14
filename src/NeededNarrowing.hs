@@ -56,6 +56,14 @@ vars = traversalVL go where
     go' (Constr c ts) = Constr c <$> traverse go' ts
     go' (Op f ts) = Op f <$> traverse go' ts
 
+-- Traverse a term's variables, possibly substituting them with terms.
+vars' :: Traversal (Term c f x) (Term c f x') x (Term c f x')
+vars' = traversalVL go where
+  go focus = go' where
+    go' (Var x) = focus x
+    go' (Constr c ts) = Constr c <$> traverse go' ts
+    go' (Op f ts) = Op f <$> traverse go' ts
+
 --------------------------------
 -- Generating fresh variables --
 --------------------------------
@@ -122,10 +130,7 @@ type Sub c f x x' = x -> Term c f x'
 
 -- Apply a substitution to a term.
 bind :: Sub c f x x' -> Term c f x -> Term c f x'
-bind s = paraOf immediateSubterms go where
-  go (Var p) _ = s p
-  go (Op f _) ts = Op f ts
-  go (Constr c _) ts = Constr c ts
+bind s = vars' %~ s
 
 -- Representation of a substitution as an association list.
 type SubRep c f x x' = AList x (Term c f x')
