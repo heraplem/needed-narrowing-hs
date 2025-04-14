@@ -50,11 +50,7 @@ subterms = cosmosOf immediateSubterms
 
 -- Traverse a term's variables.
 vars :: Traversal (Term c f x) (Term c f x') x x'
-vars = traversalVL go where
-  go focus = go' where
-    go' (Var x) = Var <$> focus x
-    go' (Constr c ts) = Constr c <$> traverse go' ts
-    go' (Op f ts) = Op f <$> traverse go' ts
+vars = traversalVL \focus -> traverseOf vars' (fmap Var . focus)
 
 -- Traverse a term's variables, possibly substituting them with terms.
 vars' :: Traversal (Term c f x) (Term c f x') x (Term c f x')
