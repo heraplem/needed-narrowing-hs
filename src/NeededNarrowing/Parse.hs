@@ -13,8 +13,8 @@ import Text.Megaparsec.Char hiding (space)
 import Text.Megaparsec.Char.Lexer qualified as Lexer
 import NeededNarrowing
 
-parseTrsFromFile :: FilePath -> IO (TRSRep String String String)
-parseTrsFromFile path = do
+parseTrsRepFromFile :: FilePath -> IO (TRSRep String String String)
+parseTrsRepFromFile path = do
   s <- readFile path
   case parse trs path s of
     Left err -> fail (errorBundlePretty err)
