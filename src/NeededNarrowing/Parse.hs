@@ -1,17 +1,19 @@
 module NeededNarrowing.Parse (parseTerm, parseTrsFromFile) where
 
-import Data.Char
-import Data.Void
 import Data.Function
+import Data.Void
 import Data.Maybe
+import Data.List
+import Data.Char
 import Control.Monad
+import Control.Monad.Writer
 import Optics
 import Text.Megaparsec
 import Text.Megaparsec.Char hiding (space)
 import Text.Megaparsec.Char.Lexer qualified as Lexer
 import NeededNarrowing
 
-parseTrsFromFile :: FilePath -> IO (TRS String String String)
+parseTrsFromFile :: FilePath -> IO (TRSRep String String String)
 parseTrsFromFile path = do
   s <- readFile path
   case parse trs path s of
@@ -21,27 +23,51 @@ parseTrsFromFile path = do
 parseTerm :: String -> Term String String String
 parseTerm = fromJust . parseMaybe term
 
+type RawTRS c f x = [(f, [x], RawTree c f x)]
+
 data RawTree c f x
   = RawLeaf (Term c f x)
   | RawBranch x [(c, [x], RawTree c f x)]
   deriving (Show)
 
-processTree :: Eq x => f -> [x] -> RawTree c f x -> Tree c f x
+processTrs :: forall c f x. (Ord c, Eq x) => RawTRS c f x -> TRSRep c f x
+processTrs rawTrs =
+  let (ds, as) = runWriter (traverse processOp rawTrs)
+      as' = as & sortOn fst & groupBy ((==) `on` fst) & fmap (nubBy ((==) `on` snd))
+  in if all (\xs -> length xs == 1) as'
+     then (head <$> as', ds)
+     else error "inconsistent constructor arities"
+  where
+    processOp :: (f, [x], RawTree c f x) -> Writer [(c, Int)] (f, Tree c f x)
+    processOp (f, xs, rawTree) = (f,) <$> processTree f xs rawTree
+
+processTree :: Eq x => f -> [x] -> RawTree c f x -> Writer [(c, Int)] (Tree c f x)
 processTree = \f xs -> go (Op f (Var <$> xs)) where
-  go t (RawLeaf t') = Leaf (toPat t, t')
-  go t (RawBranch x children) =
+  go t (RawLeaf t') = do
+    forOf_ subterms t \case
+      -- Log the arities of constructor subterms.
+      Constr c ts -> tell [(c, length ts)]
+      _ -> return ()
+    return $ Leaf (t' & vars %~ fromJust . flip findVar t)
+  go t (RawBranch x children) = do
     let p = fromJust (findVar x t)
-    in Branch p [(c, (xs, go (t & ix p .~ Constr c (Var <$> xs)) child)) | (c, xs, child) <- children]
+    ts <- forM children \(c, xs, child) -> do
+      tell [(c, length xs)]
+      children' <- go (t & ix p .~ Constr c (Var <$> xs)) child
+      return (c, children')
+    return $ Branch p ts
 
-type RawTRS c f x = [(f, [x], RawTree c f x)]
-
-processTrs :: forall c f x. (Eq f, Eq x) => RawTRS c f x -> TRS c f x
-processTrs = map processOp where
-  processOp :: (f, [x], RawTree c f x) -> (f, Tree c f x)
-  processOp (f, xs, rawTree) = (f, processTree f xs rawTree)
-
-trs :: Parsec Void String (TRS String String String)
+trs :: Parsec Void String (TRSRep String String String)
 trs = processTrs <$> rawTrs
+
+rawTrs :: Parsec Void String (RawTRS String String String)
+rawTrs = space *> many definition <* eof where
+  definition = (,,) <$> name <*> many name <*> tree
+
+  tree = key "->" *> (branch <|> leaf)
+  branch = RawBranch <$> (key "case" *> name) <*> between (key "{") (key "}") (many case')
+  case' = (,,) <$> (key "|" *> name) <*> many name <*> tree
+  leaf = RawLeaf <$> term
 
 term :: Parsec Void String (Term String String String)
 term = parenTerm <|> do
@@ -53,17 +79,8 @@ term = parenTerm <|> do
   where
     parenTerm = between (key "(") (key ")") term
 
-rawTrs :: Parsec Void String (RawTRS String String String)
-rawTrs = space *> many definition <* eof where
-  definition = (,,) <$> name <*> many name <*> tree
-
-  tree = key "->" *> (branch <|> leaf)
-  branch = RawBranch <$> (key "case" *> name) <*> between (key "{") (key "}") (many case')
-  case' = (,,) <$> (key "|" *> name) <*> many name <*> tree
-  leaf = RawLeaf <$> term
-
 name = try $ lexeme do
-  s <- takeWhile1P Nothing (\c -> not (isSpace c) && c `notElem` ['(', ')', '{', '|', '}'])
+  s <- takeWhile1P Nothing \c -> not (isSpace c) && c `notElem` ['(', ')', '{', '|', '}']
   guard (s `notElem` ["->", "case"])
   return s
 
