@@ -23,6 +23,20 @@ type AList k v = [(k, v)]
 alistGet :: Eq k => k -> AList k v -> Maybe v
 alistGet k = fmap snd . find ((k ==) . fst)
 
+---------------------
+-- Pretty-printing --
+---------------------
+
+class PP a where
+  pp :: a -> String
+  pp x = ppSPrec 0 x ""
+
+  ppSPrec :: Int -> a -> ShowS
+  ppSPrec _ x = showString (pp x)
+
+instance PP String where
+  ppSPrec _ = showString
+
 -----------
 -- Terms --
 -----------
@@ -35,9 +49,9 @@ alistGet k = fmap snd . find ((k ==) . fst)
 --
 -- + a type x of variables.
 data Term c f x
-  = Constr c [Term c f x]
+  = Var x
+  | Constr c [Term c f x]
   | Op f [Term c f x]
-  | Var x
   deriving (Show, Generic)
 
 -- Traverse a term's immediate subterms.
@@ -59,6 +73,17 @@ vars' = traversalVL go where
     go' (Var x) = focus x
     go' (Constr c ts) = Constr c <$> traverse go' ts
     go' (Op f ts) = Op f <$> traverse go' ts
+
+instance (PP c, PP f, PP x) => PP (Term c f x) where
+  ppSPrec n = \case
+    Var x -> ppSPrec 0 x
+    Constr c ts -> ppApp c ts
+    Op f ts -> ppApp f ts
+    where
+      ppApp :: PP a => a -> [Term c f x] -> ShowS
+      ppApp s ts = showParen (n > 0)
+        (under (coerced @(Endo String)) mconcat
+         (intersperse (showString " ") (ppSPrec 0 s : (ppSPrec 1 <$> ts))))
 
 --------------------------------
 -- Generating fresh variables --
