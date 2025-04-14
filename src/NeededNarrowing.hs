@@ -193,9 +193,9 @@ appTrsRep (a, d) = TRS { _arity = \c -> fromJust . alistGet c $ a
                        , _defn = \f -> fromJust . alistGet f $ d
                        }
 
--- ---------------
--- -- Narrowing --
--- ---------------
+---------------
+-- Narrowing --
+---------------
 
 -- Given a term (in a TRS), compute all possible ways that it could be narrowed.
 narrowings' :: forall c f x. (Eq c, Eq f, Fresh x) => TRS c f x -> Term c f x -> [(Term c f x, SubRep c f x x)]
