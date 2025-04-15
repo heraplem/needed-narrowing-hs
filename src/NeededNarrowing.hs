@@ -256,7 +256,7 @@ narrowings' trs = \case
       -- ip is the inductive position.  p is the position that we are focusing.
       -- p' is the inductive position relative to p.
       let p' = p ++ ip
-          -- u is the subterm of t at position p'
+          -- u is the subterm of t at position p'.
           u = t ^?! ix p'
       in case u of
         Constr c ts -> case alistGet c children of
@@ -281,7 +281,7 @@ narrowings' trs = \case
           -- The subterm at the inductive position is a function application.
           -- We narrow it recursively.  We also need to focus in on the
           -- inductive position.
-          go ((trs ^. defn) f) p' u
+          go ((trs ^. defn) f) ip t
 
 narrowings :: forall c f x. (Eq c, Eq f, Fresh x) => TRS c f x -> Term c f x -> [Term c f x]
 narrowings trs t = fst <$> narrowings' trs t
