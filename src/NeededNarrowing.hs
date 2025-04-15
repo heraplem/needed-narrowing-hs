@@ -110,7 +110,7 @@ freshIn n = freshN n . toListOf vars
 
 instance Fresh String where
   fresh xs = fromJust . find (`notElem` xs) $ words where
-    words = [[]] & iterate (\ws -> [c : w | c <- ['a'..'z'], w <- ws]) & concat & tail
+    words = [[]] & iterate (\ws -> [c : w | c <- ['a' .. 'z'], w <- ws]) & concat & tail
 
 --------------------
 -- Indexing terms --
@@ -138,7 +138,7 @@ findVar x = go where
   go (Constr _ ts) = go' ts
   go (Op _ ts) = go' ts
 
-  go' ts = ts & zipWith (\i t -> (i:) <$> go t) [0..] &
+  go' ts = ts & zipWith (\i t -> (i:) <$> go t) [0 ..] &
     under (coerced @(Alt Maybe [Int])) mconcat
 
 -------------------
@@ -218,6 +218,19 @@ appTrsRep :: (Eq c, Eq f) => TRSRep c f x -> TRS c f x
 appTrsRep (a, d) = TRS { _arity = \c -> fromJust . alistGet c $ a
                        , _defn = \f -> fromJust . alistGet f $ d
                        }
+
+-- Augment a TRS representation with rules for equality.
+augment :: c -> f -> f -> TRSRep c f x -> TRSRep c f x
+augment success eq conj (as, ds) = (as', ds') where
+  as' = (success, 0) : as
+  ds' =
+    (conj, Branch [0] [(success, Branch [1] [(success, Leaf successT)])]) :
+    (eq, Branch [0] [
+        (c, Branch [1] [
+            (c, Leaf (foldr (\i t -> Op conj [Op eq [Var [0, i], Var [1, i]], t]) successT [0 .. n - 1]))])
+        | (c, n) <- as]) :
+    ds
+  successT = Constr success []
 
 ---------------
 -- Narrowing --
