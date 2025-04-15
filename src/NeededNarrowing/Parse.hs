@@ -72,11 +72,16 @@ rawTrs = space *> many definition <* eof where
 term :: Parsec Void String (Term String String String)
 term = parenTerm <|> do
   root <- name
-  args <- many (Var <$> name <|> parenTerm)
+  args <- many subterm
   return if | isUpper (head root) -> Constr root args
             | null args -> Var root
             | otherwise -> Op root args
   where
+    subterm = parenTerm <|> do
+      s <- name
+      return if isUpper (head s)
+        then Constr s []
+        else Var s
     parenTerm = between (key "(") (key ")") term
 
 name = try $ lexeme do
