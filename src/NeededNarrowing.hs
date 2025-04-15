@@ -227,8 +227,8 @@ augment success eq conj (as, ds) = (as', ds') where
     (conj, Branch [0] [(success, Branch [1] [(success, Leaf successT)])]) :
     (eq, Branch [0] [
         (c, Branch [1] [
-            (c, Leaf (foldr (\i t -> Op conj [Op eq [Var [0, i], Var [1, i]], t]) successT [0 .. n - 1]))])
-        | (c, n) <- as]) :
+            (c, Leaf (foldr (\i t -> Op conj [Op eq [Var [0, i], Var [1, i]], t]) successT [0 .. n - 1]))]) |
+          (c, n) <- as]) :
     ds
   successT = Constr success []
 
