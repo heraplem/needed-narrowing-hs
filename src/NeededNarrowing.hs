@@ -122,10 +122,8 @@ type Position = [Int]
 
 -- Given a position and a term, we can extract or replace the corresponding
 -- subterm.
-
 type instance Index (Term c f x) = Position
 type instance IxValue (Term c f x) = Term c f x
-
 instance Ixed (Term c f x) where
   ix [] = singular simple
   ix (i : is) = elementOf immediateSubterms i %> ix is
