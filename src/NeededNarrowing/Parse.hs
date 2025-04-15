@@ -64,32 +64,25 @@ rawTrs :: Parsec Void String (RawTRS String String String)
 rawTrs = space *> many definition <* eof where
   definition = (,,) <$> name <*> many name <*> tree
 
-  tree = key "->" *> (branch <|> leaf)
-  branch = RawBranch <$> (key "case" *> name) <*> between (key "{") (key "}") (many case')
-  case' = (,,) <$> (key "|" *> name) <*> many name <*> tree
+  tree = symbol "->" *> (branch <|> leaf)
+  branch = RawBranch <$> (symbol "case" *> name) <*> between (symbol "{") (symbol "}") (many case')
+  case' = (,,) <$> (symbol "|" *> name) <*> many name <*> tree
   leaf = RawLeaf <$> term
 
 term :: Parsec Void String (Term String String String)
-term = parenTerm <|> do
-  root <- name
-  args <- many subterm
-  return if | isUpper (head root) -> Constr root args
-            | null args -> Var root
-            | otherwise -> Op root args
+term = parenTerm <|> app <$> name <*> many subterm
   where
-    subterm = parenTerm <|> do
-      s <- name
-      return if isUpper (head s)
-        then Constr s []
-        else Var s
-    parenTerm = between (key "(") (key ")") term
+    subterm = parenTerm <|> app <$> name <*> pure []
+    parenTerm = between (symbol "(") (symbol ")") term
+    app root args | isUpper (head root) = Constr root args
+                  | null args = Var root
+                  | otherwise = Op root args
 
 name = try $ lexeme do
   s <- takeWhile1P Nothing \c -> not (isSpace c) && c `notElem` ['(', ')', '{', '|', '}']
   guard (s `notElem` ["->", "case"])
   return s
 
-key = lexeme . string
-
+symbol = Lexer.symbol space
 lexeme = Lexer.lexeme space
 space = Lexer.space space1 empty empty

@@ -14,4 +14,4 @@ library
     build-depends:      base, megaparsec, mtl, optics
     hs-source-dirs:     src
     default-language:   GHC2021
-    default-extensions: BlockArguments, LambdaCase, MultiWayIf, TypeFamilies
+    default-extensions: BlockArguments, LambdaCase, TypeFamilies
