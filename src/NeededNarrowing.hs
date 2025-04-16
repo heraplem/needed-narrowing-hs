@@ -2,12 +2,12 @@
 
 module NeededNarrowing where
 
-import GHC.Generics
 import Data.Coerce
 import Data.Void
 import Data.Maybe
 import Data.List
 import Data.Monoid
+import Data.Foldable
 import Control.Monad
 import Control.Monad.Writer
 import Optics
@@ -48,30 +48,34 @@ instance PP String where
 -- + a type f of function symbols;
 --
 -- + a type x of variables.
+--
+-- Note that the Functor instance for terms maps over variables.  This is the
+-- sensible choice: mapping over variables is a common operation, whereas I have
+-- not yet run into a situation where I needed to map over constructor or
+-- function symbols.
 data Term c f x
   = Var x
   | App (Root c f) [Term c f x]
-  deriving (Show, Generic)
+  deriving (Eq, Ord, Read, Show, Functor, Traversable, Foldable)
 
 data Root c f = Constr c | Op f
-  deriving (Show, Generic)
+  deriving (Eq, Ord, Read, Show)
 
--- Traverse a term's variables.
-vars :: Traversal (Term c f x) (Term c f x') x x'
-vars = traversalVL \focus -> traverseOf vars' (fmap Var . focus)
+instance Applicative (Term c f) where
+  pure = Var
+  (<*>) = ap
 
--- Traverse a term's variables, possibly instantiating them with terms.
-vars' :: Traversal (Term c f x) (Term c f x') x (Term c f x')
-vars' = traversalVL go where
-  go focus = go' where
-    go' (Var x) = focus x
-    go' (App r ts) = App r <$> traverse go' ts
+instance Monad (Term c f) where
+  (>>=) = flip go where
+    go k = go' where
+      go' (Var x) = k x
+      go' (App r ts) = App r (go' <$> ts)
 
--- Pretty-printing terms.
+-- Pretty-print terms.
 instance (PP c, PP f, PP x) => PP (Term c f x) where
   ppSPrec n = \case
     Var x -> ppSPrec 0 x
-    App r ts -> showParen (n > 0)
+    App r ts -> showParen (n > 0 && not (null ts))
       (under (coerced @(Endo String)) mconcat
         (intersperse (showString " ") (ppSPrec 0 r : (ppSPrec 1 <$> ts))))
 instance (PP c, PP f) => PP (Root c f) where
@@ -99,7 +103,7 @@ freshN n xs = unfoldr go (n, xs) where
 
 -- Generate many variables that do not occur in a given term.
 freshIn :: Fresh x => Int -> Term c f x -> [x]
-freshIn n = freshN n . toListOf vars
+freshIn n = freshN n . toList
 
 instance Fresh String where
   fresh xs = fromJust . find (`notElem` xs) $ words where
@@ -148,7 +152,7 @@ type Sub' c f x = Sub c f x x
 
 -- Apply a substitution to a term.
 bind :: Sub c f x x' -> Term c f x -> Term c f x'
-bind s = vars' %~ s
+bind = (=<<)
 
 -- Representation of substitutions as association lists.
 type SubRep c f x x' = AList x (Term c f x')
@@ -203,7 +207,7 @@ rewriteAt r p t = bind (\p' -> t ^?! ix (p ++ p')) r
 data Tree c f x
   = Leaf (Rule c f)
   | Branch Position (AList c (Tree c f x))
-  deriving (Show)
+  deriving (Eq, Ord, Read, Show)
 
 ----------------------------
 -- Term rewriting systems --
@@ -304,5 +308,5 @@ narrowings' trs = \case
           -- inductive position.
           go ((trs ^. defn) f) ip t
 
-narrowings :: forall c f x. (Eq c, Eq f, Fresh x) => TRS c f x -> Term c f x -> [Term c f x]
+narrowings :: (Eq c, Eq f, Fresh x) => TRS c f x -> Term c f x -> [Term c f x]
 narrowings trs t = fst <$> narrowings' trs t
