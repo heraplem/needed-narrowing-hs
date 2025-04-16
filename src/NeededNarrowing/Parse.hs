@@ -34,7 +34,7 @@ processTrs :: forall c f x. (Ord c, Eq x) => RawTRS c f x -> TRSRep c f x
 processTrs rawTrs =
   let (ds, as) = runWriter (traverse processOp rawTrs)
       as' = as & sortOn fst & groupBy ((==) `on` fst) & fmap (nubBy ((==) `on` snd))
-  in if all (\xs -> length xs == 1) as'
+  in if all ((1 ==) . length) as'
      then (head <$> as', ds)
      else error "inconsistent constructor arities"
   where

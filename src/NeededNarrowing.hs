@@ -143,20 +143,32 @@ findVar x = go where
 -- Substitutions --
 -------------------
 
--- A substitution is a mapping from variables to terms.  In general, the
--- variable types may differ.
+-- A substitution is a mapping from some domain to terms.  Most commonly, the
+-- domain is the type of variables.
 type Sub c f x x' = x -> Term c f x'
+type Sub' c f x = Sub c f x x
 
 -- Apply a substitution to a term.
 bind :: Sub c f x x' -> Term c f x -> Term c f x'
 bind s = vars' %~ s
 
--- Representation of a substitution as an association list.
+-- Representation of substitutions as association lists.
 type SubRep c f x x' = AList x (Term c f x')
+type SubRep' c f x = SubRep c f x x
+
+-- Normalize a representation, substituting away "intermediate" variables from
+-- each RHS.
+--
+-- This function assumes that, once a variable occurs as an LHS, it never occurs
+-- in any subsequent RHS (or, if it does, that that is a "different" variable
+-- that just happens to have the same name).
+normalize :: Eq x => SubRep' c f x -> SubRep' c f x
+normalize s = s & foldl' go [] & reverse where
+  go acc s@(x, t) = s : (acc & mapped % _2 %~ bind (appSubRep [s]))
 
 -- Lift a representation to a substitution.
-appSubRep :: Eq x => SubRep c f x x -> Sub c f x x
-appSubRep s x = fromMaybe (Var x) . alistGet x $ s
+appSubRep :: Eq x => SubRep' c f x -> Sub' c f x
+appSubRep s x = fromMaybe (Var x) . alistGet x . normalize $ s
 
 -------------------
 -- Rewrite rules --
@@ -224,8 +236,8 @@ augment success eq conj (as, ds) = (as', ds') where
   ds' =
     (conj, Branch [0] [(success, Branch [1] [(success, Leaf successT)])]) :
     (eq, Branch [0] [
-        (c, Branch [1] [
-            (c, Leaf (foldr (\i t -> Op conj [Op eq [Var [0, i], Var [1, i]], t]) successT [0 .. n - 1]))]) |
+        (c, Branch [1]
+          [(c, Leaf (foldr (\i t -> Op conj [Op eq [Var [0, i], Var [1, i]], t]) successT [0 .. n - 1]))]) |
           (c, n) <- as]) :
     ds
   successT = Constr success []
