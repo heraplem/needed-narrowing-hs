@@ -42,18 +42,18 @@ processTrs rawTrs =
     processOp (f, xs, rawTree) = (f,) <$> processTree f xs rawTree
 
 processTree :: Eq x => f -> [x] -> RawTree c f x -> Writer [(c, Int)] (Tree c f x)
-processTree = \f xs -> go (Op f (Var <$> xs)) where
+processTree = \f xs -> go (App (Op f) (Var <$> xs)) where
   go t (RawLeaf t') = do
     forOf_ subterms t \case
       -- Log the arities of constructor subterms.
-      Constr c ts -> tell [(c, length ts)]
+      App (Constr c) ts -> tell [(c, length ts)]
       _ -> return ()
     return $ Leaf (t' & vars %~ fromJust . flip findVar t)
   go t (RawBranch x children) = do
     let p = fromJust (findVar x t)
     ts <- forM children \(c, xs, child) -> do
       tell [(c, length xs)]
-      children' <- go (t & ix p .~ Constr c (Var <$> xs)) child
+      children' <- go (t & ix p .~ App (Constr c) (Var <$> xs)) child
       return (c, children')
     return $ Branch p ts
 
@@ -74,14 +74,16 @@ term = parenTerm <|> app <$> name <*> many subterm
   where
     subterm = parenTerm <|> app <$> name <*> pure []
     parenTerm = between (symbol "(") (symbol ")") term
-    app root args | isUpper (head root) = Constr root args
+    app root args | isUpper (head root) = App (Constr root) args
                   | null args = Var root
-                  | otherwise = Op root args
+                  | otherwise = App (Op root) args
 
 name = try $ lexeme do
   s <- takeWhile1P Nothing \c -> not (isSpace c) && c `notElem` ['(', ')', '{', '|', '}']
   guard (s `notElem` ["->", "case"])
   return s
+
+word = lexeme $ takeWhile1P Nothing \c -> not (isSpace c) && c `notElem` ['(', ')', '{', '|', '}']
 
 symbol = Lexer.symbol space
 lexeme = Lexer.lexeme space

@@ -50,40 +50,33 @@ instance PP String where
 -- + a type x of variables.
 data Term c f x
   = Var x
-  | Constr c [Term c f x]
-  | Op f [Term c f x]
+  | App (Root c f) [Term c f x]
   deriving (Show, Generic)
 
--- Traverse a term's immediate subterms.
-immediateSubterms :: Traversal' (Term c f x) (Term c f x)
-immediateSubterms = gplate
-
--- Fold over a term's transitive subterms.
-subterms :: Fold (Term c f x) (Term c f x)
-subterms = cosmosOf immediateSubterms
+data Root c f = Constr c | Op f
+  deriving (Show, Generic)
 
 -- Traverse a term's variables.
 vars :: Traversal (Term c f x) (Term c f x') x x'
 vars = traversalVL \focus -> traverseOf vars' (fmap Var . focus)
-
--- Traverse a term's variables, possibly substituting them with terms.
+  
+-- Traverse a term's variables, possibly substituting terms for them.
 vars' :: Traversal (Term c f x) (Term c f x') x (Term c f x')
 vars' = traversalVL go where
   go focus = go' where
     go' (Var x) = focus x
-    go' (Constr c ts) = Constr c <$> traverse go' ts
-    go' (Op f ts) = Op f <$> traverse go' ts
+    go' (App r ts) = App r <$> traverse go' ts
 
+-- Pretty-printing terms.
 instance (PP c, PP f, PP x) => PP (Term c f x) where
   ppSPrec n = \case
     Var x -> ppSPrec 0 x
-    Constr c ts -> ppApp c ts
-    Op f ts -> ppApp f ts
-    where
-      ppApp :: PP a => a -> [Term c f x] -> ShowS
-      ppApp s ts = showParen (n > 0)
-        (under (coerced @(Endo String)) mconcat
-         (intersperse (showString " ") (ppSPrec 0 s : (ppSPrec 1 <$> ts))))
+    App r ts -> showParen (n > 0)
+      (under (coerced @(Endo String)) mconcat
+        (intersperse (showString " ") (ppSPrec 0 r : (ppSPrec 1 <$> ts))))
+instance (PP c, PP f) => PP (Root c f) where
+  ppSPrec n (Constr c) = ppSPrec n c
+  ppSPrec n (Op f) = ppSPrec n f
 
 --------------------------------
 -- Generating fresh variables --
@@ -120,6 +113,17 @@ instance Fresh String where
 -- list of indices into immediate subterms.
 type Position = [Int]
 
+-- Traverse a term's immediate subterms.
+immediateSubterms :: IxTraversal' Position (Term c f x) (Term c f x)
+immediateSubterms = itraversalVL \focus -> \case
+  Var x -> pure (Var x)
+  App r ts -> App r <$> traverse (uncurry focus) ((singleton <$> [0 ..]) `zip` ts)
+
+-- Fold over a term's transitive subterms.
+subterms :: IxFold Position (Term c f x) (Term c f x)
+subterms = iafolding (Just . ([],)) `isumming`
+  (immediateSubterms <%> subterms & reindexed (uncurry (++)))
+
 -- Given a position and a term, we can extract or replace the corresponding
 -- subterm.
 type instance Index (Term c f x) = Position
@@ -130,14 +134,9 @@ instance Ixed (Term c f x) where
 
 -- Find the position of a variable in a term.
 findVar :: Eq x => x -> Term c f x -> Maybe Position
-findVar x = go where
-  go (Var x') | x' == x = Just []
-              | otherwise = Nothing
-  go (Constr _ ts) = go' ts
-  go (Op _ ts) = go' ts
-
-  go' ts = ts & zipWith (\i t -> (i:) <$> go t) [0 ..] &
-    under (coerced @(Alt Maybe [Int])) mconcat
+findVar x = fmap fst . ifindOf subterms \_ -> \case
+  Var x' -> x' == x
+  _ -> False
 
 -------------------
 -- Substitutions --
@@ -164,11 +163,11 @@ type SubRep' c f x = SubRep c f x x
 -- that just happens to have the same name).
 normalize :: Eq x => SubRep' c f x -> SubRep' c f x
 normalize s = s & foldl' go [] & reverse where
-  go acc s@(x, t) = s : (acc & mapped % _2 %~ bind (appSubRep [s]))
+  go acc s@(x, t) = s : (acc & mapped % _2 %~ bind (sub [s]))
 
 -- Lift a representation to a substitution.
-appSubRep :: Eq x => SubRep' c f x -> Sub' c f x
-appSubRep s x = fromMaybe (Var x) . alistGet x . normalize $ s
+sub :: Eq x => SubRep' c f x -> Sub' c f x
+sub s x = fromMaybe (Var x) . alistGet x . normalize $ s
 
 -------------------
 -- Rewrite rules --
@@ -237,10 +236,10 @@ augment success eq conj (as, ds) = (as', ds') where
     (conj, Branch [0] [(success, Branch [1] [(success, Leaf successT)])]) :
     (eq, Branch [0] [
         (c, Branch [1]
-          [(c, Leaf (foldr (\i t -> Op conj [Op eq [Var [0, i], Var [1, i]], t]) successT [0 .. n - 1]))]) |
+          [(c, Leaf (foldr (\i t -> App (Op conj) [App (Op eq) [Var [0, i], Var [1, i]], t]) successT [0 .. n - 1]))]) |
           (c, n) <- as]) :
     ds
-  successT = Constr success []
+  successT = App (Constr success) []
 
 ---------------
 -- Narrowing --
@@ -249,10 +248,10 @@ augment success eq conj (as, ds) = (as', ds') where
 -- Given a term (in a TRS), compute all possible ways that it could be narrowed.
 narrowings' :: forall c f x. (Eq c, Eq f, Fresh x) => TRS c f x -> Term c f x -> [(Term c f x, SubRep c f x x)]
 narrowings' trs = \case
-  t@(Op f ts) -> runWriterT (go ((trs ^. defn) f) [] t)
+  t@(App (Op f) ts) -> runWriterT (go ((trs ^. defn) f) [] t)
   _ -> []
   where
-    go :: Tree c f x -> Position -> Term c f x -> WriterT (SubRep c f x x) [] (Term c f x)
+    go :: Tree c f x -> Position -> Term c f x -> WriterT (SubRep' c f x) [] (Term c f x)
     -- This is the main loop.
     --
     -- We are given:
@@ -282,7 +281,7 @@ narrowings' trs = \case
           -- u is the subterm of t at position p'.
           u = t ^?! ix p'
       in case u of
-        Constr c ts -> case alistGet c children of
+        App (Constr c) ts -> case alistGet c children of
           -- The subterm at the inductive position is a constructor application.
           -- We need to continue with the child case corresponding to that
           -- constructor.  If there isn't one, we fail.
@@ -296,11 +295,11 @@ narrowings' trs = \case
           let n = (trs ^. arity) c
           -- Generate fresh variables for the constructor arguments.
           let newVars = freshIn n t
-          let s = [(x, Constr c (Var <$> newVars))]
+          let s = [(x, App (Constr c) (Var <$> newVars))]
           tell s
-          let t' = bind (appSubRep s) t
+          let t' = bind (sub s) t
           go child p t'
-        Op f _ ->
+        App (Op f) _ ->
           -- The subterm at the inductive position is a function application.
           -- We narrow it recursively.  We also need to focus in on the
           -- inductive position.
