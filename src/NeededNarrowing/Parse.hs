@@ -48,7 +48,7 @@ processTree = \f xs -> go (App (Op f) (Var <$> xs)) where
       -- Log the arities of constructor subterms.
       App (Constr c) ts -> tell [(c, length ts)]
       _ -> return ()
-    return $ Leaf (t' & vars %~ fromJust . flip findVar t)
+    return $ Leaf (t' <&> fromJust . flip findVar t)
   go t (RawBranch x children) = do
     let p = fromJust (findVar x t)
     ts <- forM children \(c, xs, child) -> do
