@@ -59,8 +59,8 @@ data Root c f = Constr c | Op f
 -- Traverse a term's variables.
 vars :: Traversal (Term c f x) (Term c f x') x x'
 vars = traversalVL \focus -> traverseOf vars' (fmap Var . focus)
-  
--- Traverse a term's variables, possibly substituting terms for them.
+
+-- Traverse a term's variables, possibly instantiating them with terms.
 vars' :: Traversal (Term c f x) (Term c f x') x (Term c f x')
 vars' = traversalVL go where
   go focus = go' where
@@ -131,7 +131,7 @@ instance Ixed (Term c f x) where
   ix [] = singular simple
   ix (i : is) = elementOf immediateSubterms i %> ix is
 
--- Find the position of a variable in a term.
+-- Find the (first) position of a variable in a term.
 findVar :: Eq x => x -> Term c f x -> Maybe Position
 findVar x = fmap fst . ifindOf subterms \_ -> \case
   Var x' -> x' == x
