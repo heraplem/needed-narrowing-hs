@@ -64,8 +64,8 @@ rawTrs :: Parsec Void String (RawTRS String String String)
 rawTrs = space *> many definition <* eof where
   definition = (,,) <$> name <*> many name <*> tree
 
-  tree = symbol "->" *> (branch <|> leaf)
-  branch = RawBranch <$> (symbol "case" *> name) <*> between (symbol "{") (symbol "}") (many case')
+  tree = symbol ":" *> (branch <|> leaf)
+  branch = RawBranch <$> (symbol "[" *> name <* symbol "]") <*> between (symbol "{") (symbol "}") (many case')
   case' = (,,) <$> (symbol "|" *> name) <*> many name <*> tree
   leaf = RawLeaf <$> term
 
@@ -78,12 +78,7 @@ term = parenTerm <|> app <$> name <*> many subterm
                   | null args = Var root
                   | otherwise = App (Op root) args
 
-name = try $ lexeme do
-  s <- takeWhile1P Nothing \c -> not (isSpace c) && c `notElem` ['(', ')', '{', '|', '}']
-  guard (s `notElem` ["->", "case"])
-  return s
-
-word = lexeme $ takeWhile1P Nothing \c -> not (isSpace c) && c `notElem` ['(', ')', '{', '|', '}']
+name = try . lexeme $ takeWhile1P Nothing \c -> not (isSpace c) && c `notElem` ['(', ')', ':', '[', ']', '{', '|', '}']
 
 symbol = Lexer.symbol space
 lexeme = Lexer.lexeme space
