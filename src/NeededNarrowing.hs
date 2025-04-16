@@ -124,8 +124,7 @@ subterms :: IxFold Position (Term c f x) (Term c f x)
 subterms = iafolding (Just . ([],)) `isumming`
   (immediateSubterms <%> subterms & reindexed (uncurry (++)))
 
--- Given a position and a term, we can extract or replace the corresponding
--- subterm.
+-- Given a position and a term, extract or replace the corresponding subterm.
 type instance Index (Term c f x) = Position
 type instance IxValue (Term c f x) = Term c f x
 instance Ixed (Term c f x) where
@@ -155,6 +154,10 @@ bind s = vars' %~ s
 type SubRep c f x x' = AList x (Term c f x')
 type SubRep' c f x = SubRep c f x x
 
+-- Lift a representation to a substitution.
+sub :: Eq x => SubRep' c f x -> Sub' c f x
+sub s x = fromMaybe (Var x) . alistGet x . normalize $ s
+
 -- Normalize a representation, substituting away "intermediate" variables from
 -- each RHS.
 --
@@ -164,10 +167,6 @@ type SubRep' c f x = SubRep c f x x
 normalize :: Eq x => SubRep' c f x -> SubRep' c f x
 normalize s = s & foldl' go [] & reverse where
   go acc s@(x, t) = s : (acc & mapped % _2 %~ bind (sub [s]))
-
--- Lift a representation to a substitution.
-sub :: Eq x => SubRep' c f x -> Sub' c f x
-sub s x = fromMaybe (Var x) . alistGet x . normalize $ s
 
 -------------------
 -- Rewrite rules --
