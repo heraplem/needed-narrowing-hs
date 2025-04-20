@@ -1,18 +1,22 @@
-{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE AllowAmbiguousTypes, TemplateHaskell #-}
 
 module NeededNarrowing where
 
 import Data.Coerce
+import Data.Char
 import Data.Void
 import Data.Maybe
 import Data.List
 import Data.Monoid
 import Data.Foldable
 import Control.Monad
-import Control.Monad.Writer
-import Optics
+import Control.Monad.State
+import Control.Monad.RWS
+import Optics hiding (uncons)
 import Optics.TH
 import Optics.Operators.Unsafe
+import Optics.State.Operators
+import Optics.View
 
 -----------------------
 -- Association lists --
@@ -34,6 +38,9 @@ class PP a where
   ppSPrec :: Int -> a -> ShowS
   ppSPrec _ x = showString (pp x)
 
+ppS :: PP a => a -> ShowS
+ppS = ppSPrec 0
+
 instance PP String where
   ppSPrec _ = showString
 
@@ -50,9 +57,9 @@ instance PP String where
 -- + a type x of variables.
 --
 -- Note that the Functor instance for terms maps over variables.  This is the
--- sensible choice: mapping over variables is a common operation, whereas I have
--- not yet run into a situation where I needed to map over constructor or
--- function symbols.
+-- sensible choice: acting on variables is a common operation, whereas I have
+-- not yet run into a situation where I needed to act on constructor or function
+-- symbols.
 data Term c f x
   = Var x
   | App (Root c f) [Term c f x]
@@ -71,13 +78,26 @@ instance Monad (Term c f) where
       go' (Var x) = k x
       go' (App r ts) = App r (go' <$> ts)
 
+isVar :: Term c f x -> Bool
+isVar (Var _) = True
+isVar _ = False
+
+isConstrRooted :: Term c f x -> Bool
+isConstrRooted (App (Constr _) _) = True
+isConstrRooted _ = False
+
+isOpRooted :: Term c f x -> Bool
+isOpRooted (App (Op _) _) = True
+isOpRooted _ = False
+
 -- Pretty-print terms.
 instance (PP c, PP f, PP x) => PP (Term c f x) where
   ppSPrec n = \case
-    Var x -> ppSPrec 0 x
+    Var x -> ppS x
     App r ts -> showParen (n > 0 && not (null ts))
-      (under (coerced @(Endo String)) mconcat
-        (intersperse (showString " ") (ppSPrec 0 r : (ppSPrec 1 <$> ts))))
+      (under (coerced @(Endo String))
+       mconcat
+        (intersperse (showString " ") (ppS r : (ppSPrec 1 <$> ts))))
 instance (PP c, PP f) => PP (Root c f) where
   ppSPrec n (Constr c) = ppSPrec n c
   ppSPrec n (Op f) = ppSPrec n f
@@ -87,27 +107,38 @@ instance (PP c, PP f) => PP (Root c f) where
 --------------------------------
 
 -- The Fresh class describes types that know how to generate new elements.
---
--- Law:
---
--- fresh xs `elem` xs = False
 class Eq x => Fresh x where
-  -- Generate a single new element.
-  fresh :: [x] -> x
+  type Source x
+  allFresh :: Source x
+  fresh :: Source x -> (x, Source x)
+  stale :: x -> Source x -> Source x
 
 -- Generate many new elements.
-freshN :: Fresh x => Int -> [x] -> [x]
-freshN n xs = unfoldr go (n, xs) where
-  go (n, xs) | n == 0 = Nothing
-             | otherwise = let x = fresh xs in Just (x, (n - 1, x : xs))
+freshN :: Fresh x => Int -> Source x -> ([x], Source x)
+freshN n = runState (replicateM n . state $ fresh)
 
--- Generate many variables that do not occur in a given term.
-freshIn :: Fresh x => Int -> Term c f x -> [x]
-freshIn n = freshN n . toList
+-- Stale many elements.
+staleN :: Fresh x => [x] -> Source x -> Source x
+staleN = flip (foldr stale)
+
+-- Stale all variables in a term.
+staleTerm :: Fresh x => Term c f x -> Source x -> Source x
+staleTerm t = staleN (toList t)
 
 instance Fresh String where
-  fresh xs = fromJust . find (`notElem` xs) $ words where
-    words = [[]] & iterate (\ws -> [c : w | c <- ['a' .. 'z'], w <- ws]) & concat & tail
+  type Source String = [(Int, Maybe String)]
+
+  allFresh = [[]] & iterate buildWords & concat & map Just & zip [0..] & tail where
+    buildWords ws = [c : w | c <- ['a'..'z'], w <- ws]
+
+  fresh s = s & dropWhile (isNothing . snd) & uncons & fromJust & _1 %~ fromJust . snd
+
+  stale x xs
+    | all isAsciiLower x = xs & ix (end - start) % _2 .~ Nothing
+    | otherwise = xs
+   where
+     start = fst (head xs)
+     end = sum [(26 ^ i) * (ord c - ord 'a' + 1) | (i, c) <- [0..] `zip` reverse x]
 
 --------------------
 -- Indexing terms --
@@ -120,8 +151,8 @@ type Position = [Int]
 -- Traverse a term's immediate subterms.
 immediateSubterms :: IxTraversal' Position (Term c f x) (Term c f x)
 immediateSubterms = itraversalVL \focus -> \case
-  Var x -> pure (Var x)
-  App r ts -> App r <$> traverse (uncurry focus) ((singleton <$> [0 ..]) `zip` ts)
+  App r ts -> App r <$> traverse (uncurry focus) ((singleton <$> [0..]) `zip` ts)
+  t -> pure t
 
 -- Fold over a term's transitive subterms.
 subterms :: IxFold Position (Term c f x) (Term c f x)
@@ -155,11 +186,10 @@ bind :: Sub c f x x' -> Term c f x -> Term c f x'
 bind = (=<<)
 
 -- Representation of substitutions as association lists.
-type SubRep c f x x' = AList x (Term c f x')
-type SubRep' c f x = SubRep c f x x
+type SubRep c f x = AList x (Term c f x)
 
 -- Lift a representation to a substitution.
-sub :: Eq x => SubRep' c f x -> Sub' c f x
+sub :: Eq x => SubRep c f x -> Sub' c f x
 sub s x = fromMaybe (Var x) . alistGet x . normalize $ s
 
 -- Normalize a representation, substituting away "intermediate" variables from
@@ -168,9 +198,9 @@ sub s x = fromMaybe (Var x) . alistGet x . normalize $ s
 -- This function assumes that, once a variable occurs as an LHS, it never occurs
 -- in any subsequent RHS (or, if it does, that that is a "different" variable
 -- that just happens to have the same name).
-normalize :: Eq x => SubRep' c f x -> SubRep' c f x
+normalize :: Eq x => SubRep c f x -> SubRep c f x
 normalize s = s & foldl' go [] & reverse where
-  go acc s@(x, t) = s : (acc & mapped % _2 %~ bind (sub [s]))
+  go acc s = s : (acc & mapped % _2 %~ bind (sub [s]))
 
 -------------------
 -- Rewrite rules --
@@ -185,9 +215,9 @@ normalize s = s & foldl' go [] & reverse where
 -- being rewritten.
 type Rule c f = Term c f Position
 
--- Rewrite at a position in a term.
-rewriteAt :: Rule c f -> Position -> Term c f x -> Term c f x
-rewriteAt r p t = bind (\p' -> t ^?! ix (p ++ p')) r
+-- Rewrite a term.
+rewrite :: Rule c f -> Term c f x -> Term c f x
+rewrite r t = bind (\p -> t ^?! ix p) r
 
 ------------------------
 -- Definitional trees --
@@ -217,9 +247,10 @@ data Tree c f x
 -- symbols to definitional trees.
 --
 -- A TRS must also know the arity of each constructor symbol.
-data TRS c f x = TRS { _arity :: c -> Int
-                     , _defn :: f -> Tree c f x
-                     }
+data TRS c f x = TRS
+  { _arity :: c -> Int
+  , _defn :: f -> Tree c f x
+  }
 makeLenses ''TRS
 
 -- Representation of a TRS as a pair of association lists.
@@ -227,9 +258,10 @@ type TRSRep c f x = (AList c Int, AList f (Tree c f x))
 
 -- Lift a representation to a TRS.
 appTrsRep :: (Eq c, Eq f) => TRSRep c f x -> TRS c f x
-appTrsRep (a, d) = TRS { _arity = \c -> fromJust . alistGet c $ a
-                       , _defn = \f -> fromJust . alistGet f $ d
-                       }
+appTrsRep (a, d) = TRS
+  { _arity = \c -> fromJust . alistGet c $ a
+  , _defn = \f -> fromJust . alistGet f $ d
+  }
 
 -- Augment a TRS representation with rules for equality.
 augment :: c -> f -> f -> TRSRep c f x -> TRSRep c f x
@@ -248,66 +280,125 @@ augment success eq conj (as, ds) = (as', ds') where
 -- Narrowing --
 ---------------
 
--- Given a term (in a TRS), compute all possible ways that it could be narrowed.
-narrowings' :: forall c f x. (Eq c, Eq f, Fresh x) => TRS c f x -> Term c f x -> [(Term c f x, SubRep c f x x)]
-narrowings' trs = \case
-  t@(App (Op f) ts) -> runWriterT (go ((trs ^. defn) f) [] t)
-  _ -> []
-  where
-    go :: Tree c f x -> Position -> Term c f x -> WriterT (SubRep' c f x) [] (Term c f x)
-    -- This is the main loop.
-    --
-    -- We are given:
-    --
-    -- + the definitional tree for an operation f;
-    --
-    -- + a position p that we are "focusing"; and
-    --
-    -- + a term t (rooted by f) that we are inspecting.
-    --
-    -- We return a list of possible terms that t could narrow to, along with the
-    -- substitutions necessary to perform the narrowing.
-    --
-    -- The focusing position p identifies the subterm of t that we are
-    -- inspecting.  We need to keep track of this because, when we find that the
-    -- subterm at the inductive position is operation-rooted, we must
-    -- recursively narrow that operation.
-    --
-    -- We need to keep the entire term t around because any free variables that
-    -- we instantiate must be instantiated everywhere they occur in t, not just
-    -- in the subterm that we are inspecting.
-    go (Leaf r) p t = return (rewriteAt r p t)
-    go (Branch ip children) p t =
-      -- ip is the inductive position.  p is the position that we are focusing.
-      -- p' is the inductive position relative to p.
-      let p' = p ++ ip
-          -- u is the subterm of t at position p'.
-          u = t ^?! ix p'
-      in case u of
-        App (Constr c) ts -> case alistGet c children of
-          -- The subterm at the inductive position is a constructor application.
-          -- We need to continue with the child case corresponding to that
-          -- constructor.  If there isn't one, we fail.
-          Nothing -> mzero
-          Just child -> go child p t
-        Var x -> do
-          -- The subterm at the inductive position is a variable.  We
-          -- instantiate that variable with each possible constructor case and
-          -- continue.
-          (c, child) <- lift children
-          let n = (trs ^. arity) c
-          -- Generate fresh variables for the constructor arguments.
-          let newVars = freshIn n t
-          let s = [(x, App (Constr c) (Var <$> newVars))]
-          tell s
-          let t' = bind (sub s) t
-          go child p t'
-        App (Op f) _ -> do
-          -- The subterm at the inductive position is a function application.
-          -- We narrow it recursively.  We also need to focus in on the
-          -- inductive position.
-          u' <- go ((trs ^. defn) f) ip t
-          return (t & ix p' .~ u')
+data NarrowingEnv c f x = NarrowingEnv
+  { _trs :: TRS c f x
+  , _pos :: Position
+  }
+makeLenses ''NarrowingEnv
+
+initialEnv :: TRS c f x -> NarrowingEnv c f x
+initialEnv trs = NarrowingEnv
+  { _trs = trs
+  , _pos = []
+  }
+
+data NarrowingState c f x = NarrowingState
+  { _term :: Term c f x
+  , _vars :: Source x
+  }
+makeLenses ''NarrowingState
+
+initialState :: forall c f x. Fresh x => Term c f x -> NarrowingState c f x
+initialState t = NarrowingState
+  { _term = t
+  , _vars = allFresh @x & staleTerm t
+  }
+
+type Narrow c f x a = RWST (NarrowingEnv c f x) (SubRep c f x) (NarrowingState c f x) [] a
+
+-- Get the definitional tree of a function symbol.
+defnOf :: f -> Narrow c f x (Tree c f x)
+defnOf f = gviews (trs % defn) ($ f)
+
+-- Get the arity of a constructor symbol.
+arityOf :: c -> Narrow c f x Int
+arityOf c = gviews (trs % arity) ($ c)
+
+-- Zoom in on a given position (relative to the current focus) and execute an
+-- action.
+zoomed :: Position -> Narrow c f x a -> Narrow c f x a
+zoomed p = local (pos %~ (++ p))
+
+-- Get the focused subterm.
+focusedSubterm :: Narrow c f x (Term c f x)
+focusedSubterm = do
+  p <- gview pos
+  t <- use term
+  return (t ^?! ix p)
+
+-- Instantiate a variable to an application of a constructor.
+instantiate :: Fresh x => c -> x -> Narrow c f x ()
+instantiate c x = do
+    a <- arityOf c
+    newVars <- state (passthrough vars (freshN a))
+    substitute x (App (Constr c) (Var <$> newVars))
+
+-- Substitute one variable in the entire term.
+substitute :: Eq x => x -> Term c f x -> Narrow c f x ()
+substitute x t = do
+  let s = [(x, t)]
+  tell s
+  modifying term (bind (sub s))
+
+-- Apply a rewrite rule to the focused subterm.
+rewriteBy :: Rule c f -> Narrow c f x ()
+rewriteBy r = do
+  p <- gview pos
+  modifying (term % ix p) (rewrite r)
+
+-- Apply one narrowing step to a term.
+narrow :: (Eq c, Eq f, Fresh x) => Narrow c f x ()
+narrow = focusedSubterm >>= \case
+  App (Op f) _ -> narrowOf f
+  _ -> mzero
+
+-- Find the leftmost operation-rooted subterm and apply a narrowing step there.
+narrow' :: (Eq c, Eq f, Fresh x) => Narrow c f x ()
+narrow' = do
+  t <- focusedSubterm
+  case ifindOf subterms (const isOpRooted) t of
+    Nothing -> mzero
+    Just (p, _) -> zoomed p narrow
+
+-- Narrow an application of a given function.
+narrowOf :: (Eq c, Eq f, Fresh x) => f -> Narrow c f x ()
+narrowOf f = narrowBy =<< defnOf f
+
+-- Narrow according to a given definitional tree.
+narrowBy :: (Eq c, Eq f, Fresh x) => Tree c f x -> Narrow c f x ()
+narrowBy (Leaf r) =
+  rewriteBy r
+narrowBy (Branch p ds) =
+  zoomed p focusedSubterm >>= \case
+    App (Constr c) _ ->
+      maybe mzero narrowBy (alistGet c ds)
+    Var x -> do
+      (c, d) <- lift ds
+      instantiate c x
+      narrowBy d
+    App (Op f) _ ->
+      zoomed p (narrowOf f)
 
 narrowings :: (Eq c, Eq f, Fresh x) => TRS c f x -> Term c f x -> [Term c f x]
-narrowings trs t = fst <$> narrowings' trs t
+narrowings trs t = runRWST narrow (initialEnv trs) (initialState t) <&> view (_2 % term)
+
+narrowings' :: (Eq c, Eq f, Fresh x) => TRS c f x -> Term c f x -> [Term c f x]
+narrowings' trs t = runRWST narrow' (initialEnv trs) (initialState t) <&> view (_2 % term)
+
+data ETree a = ETree a [ETree a]
+  deriving (Eq, Ord, Read, Show, Functor, Traversable, Foldable)
+
+eval :: (Eq c, Eq f, Fresh x) => TRS c f x -> Term c f x -> ETree (Term c f x)
+eval trs t = ETree t (eval trs <$> narrowings trs t)
+
+eval' :: (Eq c, Eq f, Fresh x) => TRS c f x -> Term c f x -> ETree (Term c f x)
+eval' trs t = ETree t (eval' trs <$> narrowings' trs t)
+
+instance PP a => PP (ETree a) where
+  ppSPrec _ = go 0 where
+    go n (ETree x ts) =
+      ppS (concat (replicate (n - 1) "│ ")) .
+      ppS (if n > 0 then "├ " else "") .
+      ppS x .
+      ppS "\n" .
+      under (coerced @(Endo String)) mconcat (go (n + 1) <$> ts)

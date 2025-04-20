@@ -11,7 +11,7 @@ import Optics
 import Text.Megaparsec
 import Text.Megaparsec.Char hiding (space)
 import Text.Megaparsec.Char.Lexer qualified as Lexer
-import NeededNarrowing
+import NeededNarrowing hiding (trs, term)
 
 parseTrsRepFromFile :: FilePath -> IO (TRSRep String String String)
 parseTrsRepFromFile path = do
