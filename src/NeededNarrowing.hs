@@ -401,4 +401,4 @@ instance PP a => PP (ETree a) where
       ppS (if n > 0 then "├ " else "") .
       ppS x .
       ppS "\n" .
-      under (coerced @(Endo String)) mconcat (go (n + 1) <$> ts)
+      appEndo (foldMap (Endo . go (n + 1)) ts)
